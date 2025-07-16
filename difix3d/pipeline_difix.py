@@ -430,6 +430,7 @@ class DifixPipeline(
                 # layer.
                 prompt_embeds = self.text_encoder.text_model.final_layer_norm(prompt_embeds)
 
+
         if self.text_encoder is not None:
             prompt_embeds_dtype = self.text_encoder.dtype
         elif self.unet is not None:
@@ -443,6 +444,7 @@ class DifixPipeline(
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
@@ -1004,6 +1006,7 @@ class DifixPipeline(
         # to avoid doing two forward passes
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+
 
         if ip_adapter_image is not None:
             output_hidden_state = False if isinstance(self.unet.encoder_hid_proj, ImageProjection) else True

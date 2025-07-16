@@ -5,18 +5,20 @@ import numpy as np
 from PIL import Image
 from glob import glob
 from tqdm import tqdm
-from model import Difix
+from difix3d.model import Difix
 
 
-if __name__ == "__main__":
+def main():
     # Argument parser
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_image', type=str, required=True, help='Path to the input image or directory')
+    parser.add_argument('input_image', type=str,  help='Path to the input image or directory')
     parser.add_argument('--ref_image', type=str, default=None, help='Path to the reference image or directory')
+
+
     parser.add_argument('--height', type=int, default=576, help='Height of the input image')
     parser.add_argument('--width', type=int, default=1024, help='Width of the input image')
-    parser.add_argument('--prompt', type=str, required=True, help='The prompt to be used')
-    parser.add_argument('--model_name', type=str, default=None, help='Name of the pretrained model to be used')
+
+    parser.add_argument('--prompt', default="remove degredation", help='The prompt to be used')
     parser.add_argument('--model_path', type=str, default=None, help='Path to a model state dict to be used')
     parser.add_argument('--output_dir', type=str, default='output', help='Directory to save the output')
     parser.add_argument('--seed', type=int, default=42, help='Random seed to be used')
@@ -28,11 +30,13 @@ if __name__ == "__main__":
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Initialize the model
+    has_ref = args.ref_image is not None
+    checkpoint_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "checkpoints")
     model = Difix(
-        pretrained_name=args.model_name,
-        pretrained_path=args.model_path,
+        pretrained_name="nvidia/difix_ref" if has_ref else "nvidia/difix",
+        pretrained_path=os.path.join(checkpoint_dir, "difix_ref.pkl" if has_ref else "difix.pkl"),
         timestep=args.timestep,
-        mv_unet=True if args.ref_image is not None else False,
+        mv_unet=has_ref,
     )
     model.set_eval()
 
@@ -77,3 +81,7 @@ if __name__ == "__main__":
         # Save as individual images
         for i, output_image in enumerate(tqdm(output_images, desc="Saving images")):
             output_image.save(os.path.join(args.output_dir, os.path.basename(input_images[i])))
+
+
+if __name__ == "__main__":
+    main()

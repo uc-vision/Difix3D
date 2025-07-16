@@ -4,13 +4,12 @@ import sys
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-import torch
+import torch 
 from torchvision import transforms
 from transformers import AutoTokenizer, CLIPTextModel
 from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler
 from peft import LoraConfig
-p = "src/"
-sys.path.append(p)
+
 from einops import rearrange, repeat
 
 
@@ -118,6 +117,8 @@ class Difix(torch.nn.Module):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("stabilityai/sd-turbo", subfolder="tokenizer")
         self.text_encoder = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda()
+
+
         self.sched = make_1step_sched()
 
         vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
@@ -131,7 +132,7 @@ class Difix(torch.nn.Module):
         vae.decoder.ignore_skip = False
         
         if mv_unet:
-            from mv_unet import UNet2DConditionModel
+            from .mv_unet import UNet2DConditionModel
         else:
             from diffusers import UNet2DConditionModel
 
@@ -231,7 +232,9 @@ class Difix(torch.nn.Module):
         
         unet_input = z
         
-        model_pred = self.unet(unet_input, self.timesteps, encoder_hidden_states=caption_enc,).sample
+        # model_pred = self.unet(unet_input, self.timesteps, encoder_hidden_states=caption_enc,).sample
+        model_pred = self.unet(unet_input, self.timesteps).sample
+        print(model_pred.shape)
         z_denoised = self.sched.step(model_pred, self.timesteps, z, return_dict=True).prev_sample
         self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
         output_image = (self.vae.decode(z_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
@@ -241,22 +244,27 @@ class Difix(torch.nn.Module):
     
     def sample(self, image, width, height, ref_image=None, timesteps=None, prompt=None, prompt_tokens=None):
         input_width, input_height = image.size
-        new_width = image.width - image.width % 8
-        new_height = image.height - image.height % 8
-        image = image.resize((new_width, new_height), Image.LANCZOS)
+        # new_width = image.width - image.width % 8
+        # new_height = image.height - image.height % 8
+        # image = image.resize((new_width, new_height), Image.LANCZOS)
         
         T = transforms.Compose([
-            transforms.Resize((height, width), interpolation=Image.LANCZOS),
+            transforms.Resize((height, width), Image.LANCZOS),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ])
         if ref_image is None:
             x = T(image).unsqueeze(0).unsqueeze(0).cuda()
         else:
-            ref_image = ref_image.resize((new_width, new_height), Image.LANCZOS)
+            ref_image = ref_image.resize((height, width), Image.LANCZOS)
             x = torch.stack([T(image), T(ref_image)], dim=0).unsqueeze(0).cuda()
+
+        print(x.shape)
         
-        output_image = self.forward(x, timesteps, prompt, prompt_tokens)[:, 0]
+        with torch.no_grad():
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                output_image = self.forward(x, timesteps, prompt, prompt_tokens)[:, 0]
+
         output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
         output_pil = output_pil.resize((input_width, input_height), Image.LANCZOS)
         
