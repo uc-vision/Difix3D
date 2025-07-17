@@ -48,8 +48,6 @@ difix_pipe = "difix3d.inference_pipe:main"
 reportInvalidTypeForm = "none"
 reportGeneralTypeIssues = "none"
 
-[tool.ruff]
-indent-width = 2
 
 [tool.pytest.ini_options]
 filterwarnings = [
