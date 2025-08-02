@@ -237,14 +237,14 @@ class Difix(torch.nn.Module):
         return output_image
 
     def compile(self):
-        self.unet.to(torch.bfloat16)
-        self.unet = torch.compile(self.unet, dynamic=False)
-        # self.unet = torch.compile(self.unet, dynamic=False) #torch.compile(self.unet, backend="torch_tensorrt",  dynamic=False,
-        #      options={"truncate_long_and_double": True,
-        #                                  "precision": torch.float16,
-        #                                  "min_block_size": 1,
-        #                                  "optimization_level": 4,
-        #                                  "use_python_runtime": False})
+        # self.unet.to(torch.bfloat16)
+        # self.unet = torch.compile(self.unet, dynamic=False)
+        self.unet = torch.compile(self.unet, backend="torch_tensorrt",  dynamic=False,
+             options={"truncate_long_and_double": True,
+                                         "precision": torch.float16,
+                                         "min_block_size": 1,
+                                         "optimization_level": 4,
+                                         "use_python_runtime": False})
 
     def sample(self, image, width, height, ref_image=None):
         input_width, input_height = image.size
