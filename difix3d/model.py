@@ -241,7 +241,7 @@ class Difix(torch.nn.Module):
         # self.unet = torch.compile(self.unet, dynamic=False)
         self.unet = torch.compile(self.unet, backend="torch_tensorrt",  dynamic=False,
              options={"truncate_long_and_double": True,
-                                         "precision": torch.float16,
+        "enabled_precisions": {torch.float32, torch.float16},
                                          "min_block_size": 1,
                                          "optimization_level": 4,
                                          "use_python_runtime": False})
@@ -267,7 +267,7 @@ transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
 
 
         with torch.no_grad():
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
                 for i in tqdm(range(100)):
                     output_image = self.forward(x)[:, 0]
 
