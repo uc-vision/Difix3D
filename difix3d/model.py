@@ -236,13 +236,27 @@ class Difix(torch.nn.Module):
 
         return output_image
 
+    def compile(self):
+        self.unet.to(torch.bfloat16)
+        self.unet = torch.compile(self.unet, dynamic=False)
+        # self.unet = torch.compile(self.unet, dynamic=False) #torch.compile(self.unet, backend="torch_tensorrt",  dynamic=False,
+        #      options={"truncate_long_and_double": True,
+        #                                  "precision": torch.float16,
+        #                                  "min_block_size": 1,
+        #                                  "optimization_level": 4,
+        #                                  "use_python_runtime": False})
+
     def sample(self, image, width, height, ref_image=None):
         input_width, input_height = image.size
         # new_width = image.width - image.width % 8
         # new_height = image.height - image.height % 8
         # image = image.resize((new_width, new_height), Image.LANCZOS)
 
-        T = transforms.Compose([transforms.Resize((height, width), Image.LANCZOS), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
+        T = transforms.Compose(
+            [
+transforms.Resize((height, width), Image.LANCZOS), 
+transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+        )
         if ref_image is None:
             x = T(image).unsqueeze(0).unsqueeze(0).cuda()
         else:
@@ -250,19 +264,14 @@ class Difix(torch.nn.Module):
             x = torch.stack([T(image), T(ref_image)], dim=0).unsqueeze(0).cuda()
 
 
-        model = torch.compile(self, backend="torch_tensorrt",  dynamic=False,
-             options={"truncate_long_and_double": True,
-                                         "precision": torch.half,
-                                         "min_block_size": 2,
-                                         "optimization_level": 4,
-                                         "use_python_runtime": False,})
+
 
         with torch.no_grad():
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 for i in tqdm(range(100)):
-                    output_image = model(x)[:, 0]
+                    output_image = self.forward(x)[:, 0]
 
-        output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
+        output_pil = transforms.ToPILImage()(output_image[0].float().cpu() * 0.5 + 0.5)
         output_pil = output_pil.resize((input_width, input_height), Image.LANCZOS)
 
         return output_pil

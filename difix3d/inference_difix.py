@@ -43,6 +43,8 @@ def main():
     mv_unet=has_ref,
   )
   model.set_eval()
+  model.compile()
+
 
   # Load input images
   if os.path.isdir(args.input_image):
