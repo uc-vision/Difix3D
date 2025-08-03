@@ -243,7 +243,7 @@ class Difix(torch.nn.Module):
 
         return output_image
 
-    def compile(self, optimization_level=5):
+    def compile(self, optimization_level=4):
         # self.unet.to(torch.bfloat16)
         # self.unet = torch.compile(self.unet, dynamic=False)
 
