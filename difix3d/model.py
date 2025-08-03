@@ -209,6 +209,12 @@ class Difix(torch.nn.Module):
         self.vae.decoder.skip_conv_3.requires_grad_(True)
         self.vae.decoder.skip_conv_4.requires_grad_(True)
 
+    def get_caption_enc(self, num_views = 1):
+        caption_enc = torch.zeros(1, 77, 1024, device="cuda")
+        caption_enc = repeat(caption_enc, "b n c -> (b v) n c", v=num_views)
+        return caption_enc
+
+
     def forward(self, x, timesteps=None):
         # either the prompt or the prompt_tokens should be provided
         assert (timesteps is None) != (self.timesteps is None), "Either timesteps or self.timesteps should be provided"
@@ -220,12 +226,13 @@ class Difix(torch.nn.Module):
         # caption_enc = self.text_encoder(prompt_tokens)[0]
         # caption_enc.zero_()
 
-        caption_enc = torch.zeros(1, 77, 1024, device=x.device)
-
         num_views = x.shape[1]
+        caption_enc = self.get_caption_enc(num_views)
+
         x = rearrange(x, "b v c h w -> (b v) c h w")
         z = self.vae.encode(x).latent_dist.sample() * self.vae.config.scaling_factor
-        caption_enc = repeat(caption_enc, "b n c -> (b v) n c", v=num_views)
+
+        # print(z.shape, x.shape, self.vae.encoder, self.vae.decoder)
 
 
         model_pred = self.unet(z, self.timesteps, encoder_hidden_states=caption_enc).sample
@@ -239,9 +246,31 @@ class Difix(torch.nn.Module):
     def compile(self):
         # self.unet.to(torch.bfloat16)
         # self.unet = torch.compile(self.unet, dynamic=False)
-        self.unet = torch.compile(self.unet, backend="torch_tensorrt",  dynamic=False,
-             options={"truncate_long_and_double": True,
-        "enabled_precisions": {torch.float32, torch.float16}})
+
+        # unet = torch.jit.optimize_for_inference(torch.jit.trace(self.unet, [
+        #     torch.randn(1, 4, 72, 128).cuda(),
+        #     self.timesteps,
+        #     self.get_caption_enc()
+        # ], strict=False))
+
+        # self.unet = torch.compile(unet, backend="torch_tensorrt",  dynamic=False,
+        #      options={"truncate_long_and_double": True,
+        # "enabled_precisions": {torch.float32, torch.float16}})
+
+        options =        dict(workspace_size=1 << 31, # 2GB
+          truncate_long_and_double=True,
+          enabled_precisions={torch.float32, torch.float16}) 
+
+        self.vae.encoder = torch.compile(self.vae.encoder, 
+            backend="torch_tensorrt",  dynamic=False, options=options)
+
+        self.vae.decoder = torch.compile(self.vae.decoder, 
+            backend="torch_tensorrt",  dynamic=False, options=options)
+
+
+        
+        return
+
 
     def sample(self, image, width, height, ref_image=None):
         input_width, input_height = image.size
@@ -263,10 +292,9 @@ transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
 
 
 
-        with torch.no_grad():
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
-                for i in tqdm(range(100)):
-                    output_image = self.forward(x)[:, 0]
+    # with torch.autocast(device_type="cuda", dtype=torch.float16):
+        for i in tqdm(range(100)):
+            output_image = self.forward(x)[:, 0]
 
         output_pil = transforms.ToPILImage()(output_image[0].float().cpu() * 0.5 + 0.5)
         output_pil = output_pil.resize((input_width, input_height), Image.LANCZOS)

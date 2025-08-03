@@ -6,6 +6,7 @@ from PIL import Image
 from glob import glob
 from tqdm import tqdm
 from difix3d.model import Difix
+import torch
 
 
 def main():
@@ -42,6 +43,9 @@ def main():
     timestep=args.timestep,
     mv_unet=has_ref,
   )
+
+  torch.set_grad_enabled(False)
+
   model.set_eval()
   model.compile()
 

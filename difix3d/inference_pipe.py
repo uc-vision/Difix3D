@@ -5,6 +5,7 @@ from diffusers.utils.loading_utils import load_image
 import torch
 from tqdm import tqdm
 
+import torch_tensorrt
 
 def main():
   parser = argparse.ArgumentParser()
@@ -31,16 +32,21 @@ def main():
 
   input_image = pipe.image_processor.preprocess(input_image)
 
+  pipe.unet = torch.compile(pipe.unet, backend="torch_tensorrt",  dynamic=False,
+             options={"truncate_long_and_double": True,
+        "enabled_precisions": {torch.float32, torch.float16}})
+
 
   with torch.autocast("cuda", torch.float16):
 
-    output_image = pipe(
-      args.prompt,
-      image=input_image,
-      ref_image=ref_image,
-      num_inference_steps=1,
-      timesteps=[199],
-      guidance_scale=0.0,
-    ).images[0]
+    for i in tqdm(range(100)):
+      output_image = pipe(
+        args.prompt,
+        image=input_image,
+        ref_image=ref_image,
+        num_inference_steps=1,
+        timesteps=[199],
+        guidance_scale=0.0,
+      ).images[0]
 
   output_image.save(os.path.join("output", os.path.basename(args.input_image)))
