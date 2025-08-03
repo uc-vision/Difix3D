@@ -260,10 +260,9 @@ class Difix(torch.nn.Module):
         options =        dict(workspace_size=1 << 34, # 16GB
           truncate_long_and_double=True,
           optimization_level=optimization_level,
-          use_explicit_typing=True,
-
-          enabled_precisions={torch.float16, torch.float32})
-          # enabled_precisions={torch.float32, torch.float16}) 
+          # use_explicit_typing=True,
+          enabled_precisions={torch.float16})
+          # enabled_precisions={torch.float32, torch.float1-6}) 
 
         self.vae.encoder = torch.compile(self.vae.encoder, 
             backend="torch_tensorrt",  dynamic=False, options=options)
