@@ -263,17 +263,17 @@ class Difix(torch.nn.Module):
           enabled_precisions={torch.float16})
           # enabled_precisions={torch.float32, torch.float16}) 
 
-        # self.vae.encoder = torch.compile(self.vae.encoder, 
-        #     backend="torch_tensorrt",  dynamic=False, options=options)
-
-        # self.vae.decoder = torch.compile(self.vae.decoder, 
-        #     backend="torch_tensorrt",  dynamic=False, options=options)
-
-
-        # self.unet = torch.compile(self.unet, 
-        #     backend="torch_tensorrt",  dynamic=False, options=options)
-        self.compiled = torch.compile(self.forward, 
+        self.vae.encoder = torch.compile(self.vae.encoder, 
             backend="torch_tensorrt",  dynamic=False, options=options)
+
+        self.vae.decoder = torch.compile(self.vae.decoder, 
+            backend="torch_tensorrt",  dynamic=False, options=options)
+
+
+        self.unet = torch.compile(self.unet, 
+            backend="torch_tensorrt",  dynamic=False, options=options)
+        # self.compiled = torch.compile(self.forward, 
+        #     backend="torch_tensorrt",  dynamic=False, options=options)
         
         return
 
@@ -297,7 +297,7 @@ transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
 
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             for i in tqdm(range(100)):
-                output_image = self.compiled(x)[:, 0]
+                output_image = self.forward(x)[:, 0]
 
         output_pil = transforms.ToPILImage()(output_image[0].float().cpu() * 0.5 + 0.5)
         output_pil = output_pil.resize((input_width, input_height), Image.LANCZOS)
