@@ -257,7 +257,7 @@ class Difix(torch.nn.Module):
         #      options={"truncate_long_and_double": True,
         # "enabled_precisions": {torch.float32, torch.float16}})
 
-        options =        dict(workspace_size=1 << 31, # 2GB
+        options =        dict(workspace_size=1 << 32, # 4GB
           truncate_long_and_double=True,
           enabled_precisions={torch.float16})
           # enabled_precisions={torch.float32, torch.float16}) 
