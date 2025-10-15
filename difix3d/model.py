@@ -244,36 +244,10 @@ class Difix(torch.nn.Module):
         return output_image
 
     def compile(self, optimization_level=4):
-        # self.unet.to(torch.bfloat16)
-        # self.unet = torch.compile(self.unet, dynamic=False)
+        self.vae.encoder = torch.compile(self.vae.encoder, dynamic=False)
+        self.vae.decoder = torch.compile(self.vae.decoder, dynamic=False)
 
-        # unet = torch.jit.optimize_for_inference(torch.jit.trace(self.unet, [
-        #     torch.randn(1, 4, 72, 128).cuda(),
-        #     self.timesteps,
-        #     self.get_caption_enc()
-        # ], strict=False))
-
-        # self.unet = torch.compile(unet, backend="torch_tensorrt",  dynamic=False,
-        #      options={"truncate_long_and_double": True,
-        # "enabled_precisions": {torch.float32, torch.float16}})
-
-        options =        dict(workspace_size=1 << 34, # 16GB
-          truncate_long_and_double=True,
-          optimization_level=optimization_level,
-          enabled_precisions={torch.float16})
-          # enabled_precisions={torch.float32, torch.float1-6}) 
-
-        self.vae.encoder = torch.compile(self.vae.encoder, 
-            backend="torch_tensorrt",  dynamic=False, options=options)
-
-        self.vae.decoder = torch.compile(self.vae.decoder, 
-            backend="torch_tensorrt",  dynamic=False, options=options)
-
-
-        self.unet = torch.compile(self.unet, 
-            backend="torch_tensorrt",  dynamic=False, options=options)
-        # self.compiled = torch.compile(self.forward, 
-        #     backend="torch_tensorrt",  dynamic=False, options=options)
+        self.unet = torch.compile(self.unet,  dynamic=False)
         
         return
 
@@ -295,7 +269,7 @@ transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
             ref_image = ref_image.resize((height, width), Image.LANCZOS)
             x = torch.stack([T(image), T(ref_image)], dim=0).unsqueeze(0).cuda()
 
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for i in tqdm(range(100)):
                 output_image = self.forward(x)[:, 0]
 
