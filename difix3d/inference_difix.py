@@ -1,12 +1,13 @@
 import os
-import imageio
 import argparse
-import numpy as np
-from PIL import Image
+import time
 from glob import glob
 from tqdm import tqdm
+from PIL import Image
+from torchvision import transforms
 from difix3d.model import Difix
 import torch
+import torch.nn.functional as F
 
 
 def main():
@@ -28,7 +29,7 @@ def main():
   )
   parser.add_argument("--seed", type=int, default=42, help="Random seed to be used")
   parser.add_argument("--timestep", type=int, default=199, help="Diffusion timestep")
-  parser.add_argument("--video", action="store_true", help="If the input is a video")
+  parser.add_argument("--num_iterations", type=int, default=100, help="Number of iterations for benchmarking")
   args = parser.parse_args()
 
   # Create output directory
@@ -47,49 +48,89 @@ def main():
   torch.set_grad_enabled(False)
 
   model.set_eval()
-  model.compile()
+  
+  # Convert model parameters to bfloat16 before export
+  model = model.to(dtype=torch.bfloat16)
+  x = torch.zeros(1 if args.ref_image is None else 2, 3, args.height, args.width).cuda()
+  
+  with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+    exported_program = torch.export.export(model, (x,))
+
+  model = exported_program.module()
+  model = torch.compile(model, backend="torch_tensorrt", dynamic=False, options={"truncate_long_and_double": True, "enabled_precisions": {torch.float16}})
 
 
-  # Load input images
-  if os.path.isdir(args.input_image):
-    input_images = sorted(glob(os.path.join(args.input_image, "*.png")))
-  else:
-    input_images = [args.input_image]
-
-  # Load reference images if provided
+  # Load single image for benchmarking
+  T = transforms.Compose([
+    transforms.ToTensor(),  # Converts PIL to tensor in [0, 1] range
+  ])
+  
+  pil_image = Image.open(args.input_image).convert("RGB")
+  image = T(pil_image).unsqueeze(0).cuda().to(torch.bfloat16)  # (1, c, h, w)
+  
+  ref_image_tensor = None
   if args.ref_image is not None:
-    if os.path.isdir(args.ref_image):
-      ref_images = sorted(glob(os.path.join(args.ref_image, "*")))
-    else:
-      ref_images = [args.ref_image]
+    pil_ref = Image.open(args.ref_image).convert("RGB")
+    ref_image_tensor = T(pil_ref).unsqueeze(0).cuda().to(torch.bfloat16)  # (1, c, h, w)
 
-    assert len(input_images) == len(ref_images), (
-      "Number of input images and reference images should be the same"
-    )
+  # Warmup
+  print("Warming up...")
+  for _ in range(10):
+    _ = sample_image(model, image, height=args.height, width=args.width, ref_image=ref_image_tensor)
+  
+  # Benchmark
+  print(f"Benchmarking {args.num_iterations} iterations...")
+  torch.cuda.synchronize()
+  start_time = time.time()
+  
+  for _ in tqdm(range(args.num_iterations), desc="Benchmarking"):
+    output_image = sample_image(model, image, height=args.height, width=args.width, ref_image=ref_image_tensor)
+  
+  torch.cuda.synchronize()
+  end_time = time.time()
+  
+  total_time = end_time - start_time
+  avg_time = total_time / args.num_iterations
+  fps = args.num_iterations / total_time
+  
+  print(f"\nBenchmark Results:")
+  print(f"  Total time: {total_time:.3f}s")
+  print(f"  Average time per iteration: {avg_time*1000:.2f}ms")
+  print(f"  Throughput: {fps:.2f} FPS")
 
-  # Process images
-  output_images = []
-  for i, input_image in enumerate(tqdm(input_images, desc="Processing images")):
-    image = Image.open(input_image).convert("RGB")
-    ref_image = Image.open(ref_images[i]).convert("RGB") if args.ref_image is not None else None
-    output_image = model.sample(
-      image, height=args.height, width=args.width, ref_image=ref_image,
-    )
-    output_images.append(output_image)
 
-  # Save outputs
-  if args.video:
-    # Save as video
-    video_path = os.path.join(args.output_dir, "output.mp4")
-    writer = imageio.get_writer(video_path, fps=30)
-    for output_image in tqdm(output_images, desc="Saving video"):
-      writer.append_data(np.array(output_image))
-    writer.close()
+def sample_image(model, image, width, height, ref_image=None):
+  """Sample an image using either a regular model or exported model.
+  
+  Args:
+    model: Model (regular or exported) to use for inference
+    image: Input tensor of shape (b, c, h, w) already on device, in [0, 1] range
+    width: Target width
+    height: Target height
+    ref_image: Optional reference tensor of shape (b, c, h, w) already on device, in [0, 1] range
+    
+  Returns:
+    Output tensor of shape (b, c, h, w) on device, normalized to [-1, 1]
+  """
+  # Normalize from [0, 1] to [-1, 1]
+  image = image * 2.0 - 1.0
+  
+  # Resize using interpolate
+  image = F.interpolate(image, size=(height, width), mode="bilinear", align_corners=False)
+  
+  if ref_image is None:
+    x = image  # (b, c, h, w)
   else:
-    # Save as individual images
-    for i, output_image in enumerate(tqdm(output_images, desc="Saving images")):
-      output_image.save(os.path.join(args.output_dir, os.path.basename(input_images[i])))
+    # Normalize and resize ref_image
+    ref_image = ref_image * 2.0 - 1.0
+    ref_image = F.interpolate(ref_image, size=(height, width), mode="bilinear", align_corners=False)
+    x = torch.cat([image, ref_image], dim=0)  # (2*b, c, h, w)
 
+  with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+    output_image = model(x)  # Returns (b, c, h, w)
+  return output_image
+
+  
 
 if __name__ == "__main__":
   main()

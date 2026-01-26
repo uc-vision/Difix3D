@@ -9,10 +9,9 @@ from torchvision import transforms
 from transformers import AutoTokenizer, CLIPTextModel
 from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler
 from peft import LoraConfig
+from typing import cast
 
 
-import torch_tensorrt
-from einops import rearrange, repeat
 
 
 def make_1step_sched():
@@ -40,7 +39,8 @@ def my_vae_encoder_fwd(self, sample):
 
 def my_vae_decoder_fwd(self, sample, latent_embeds=None):
     sample = self.conv_in(sample)
-    upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
+    # Use input tensor dtype instead of parameter dtype to respect autocast
+    upscale_dtype = sample.dtype
     # middle
     sample = self.mid_block(sample, latent_embeds)
     sample = sample.to(upscale_dtype)
@@ -48,7 +48,8 @@ def my_vae_decoder_fwd(self, sample, latent_embeds=None):
         skip_convs = [self.skip_conv_1, self.skip_conv_2, self.skip_conv_3, self.skip_conv_4]
         # up
         for idx, up_block in enumerate(self.up_blocks):
-            skip_in = skip_convs[idx](self.incoming_skip_acts[::-1][idx] * self.gamma)
+            skip_act = self.incoming_skip_acts[::-1][idx].to(upscale_dtype)
+            skip_in = skip_convs[idx](skip_act * self.gamma)
             # add skip
             sample = sample + skip_in
             sample = up_block(sample, latent_embeds)
@@ -115,14 +116,14 @@ def save_ckpt(net_difix, optimizer, outf):
 
 
 class Difix(torch.nn.Module):
-    def __init__(self, pretrained_name=None, pretrained_path=None, ckpt_folder="checkpoints", lora_rank_vae=4, mv_unet=False, timestep=999):
+    def __init__(self, pretrained_name=None, pretrained_path=None, ckpt_folder="checkpoints", lora_rank_vae=4, mv_unet=False, timestep=199):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("stabilityai/sd-turbo", subfolder="tokenizer")
-        self.text_encoder = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda()
+        self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda() # type: ignore
 
         self.sched = make_1step_sched()
 
-        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
+        vae: AutoencoderKL = cast(AutoencoderKL, AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae"))
         vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
         vae.decoder.forward = my_vae_decoder_fwd.__get__(vae.decoder, vae.decoder.__class__)
         # add the skip connection convs
@@ -137,7 +138,7 @@ class Difix(torch.nn.Module):
         else:
             from diffusers import UNet2DConditionModel
 
-        unet = UNet2DConditionModel.from_pretrained("stabilityai/sd-turbo", subfolder="unet")
+        unet   = cast(UNet2DConditionModel, UNet2DConditionModel.from_pretrained("stabilityai/sd-turbo", subfolder="unet"))
 
         if pretrained_path is not None:
             sd = torch.load(pretrained_path, map_location="cpu")
@@ -181,7 +182,7 @@ class Difix(torch.nn.Module):
 
         self.unet, self.vae = unet, vae
         self.vae.decoder.gamma = 1
-        self.timesteps = torch.tensor([timestep], device="cuda").long()
+        self.timestep = timestep  # Store as Python int
         self.text_encoder.requires_grad_(False)
 
         # print number of trainable parameters
@@ -209,47 +210,46 @@ class Difix(torch.nn.Module):
         self.vae.decoder.skip_conv_3.requires_grad_(True)
         self.vae.decoder.skip_conv_4.requires_grad_(True)
 
-    def get_caption_enc(self, num_views = 1):
-        caption_enc = torch.zeros(1, 77, 1024, device="cuda")
-        caption_enc = repeat(caption_enc, "b n c -> (b v) n c", v=num_views)
+    def get_caption_enc(self, batch_size: int = 1, dtype: torch.dtype = torch.float32):
+        caption_enc = torch.zeros(batch_size, 77, 1024, device="cuda", dtype=dtype)
         return caption_enc
 
 
-    def forward(self, x, timesteps=None):
-        # either the prompt or the prompt_tokens should be provided
-        assert (timesteps is None) != (self.timesteps is None), "Either timesteps or self.timesteps should be provided"
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass with batch of images.
+        
+        Args:
+            x: Input tensor of shape (b, c, h, w) - batch of images
+            
+        Returns:
+            Output tensor of shape (b, c, h, w) - processed images
+        """
+        # x is (b, c, h, w)
+        b = x.shape[0]
+        caption_enc = self.get_caption_enc(b, dtype=x.dtype)
 
-        # if prompt is not None:
-        #     # encode the text prompt
-        #     prompt_tokens = self.tokenizer(prompt, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids.cuda()
-
-        # caption_enc = self.text_encoder(prompt_tokens)[0]
-        # caption_enc.zero_()
-
-        num_views = x.shape[1]
-        caption_enc = self.get_caption_enc(num_views)
-
-        x = rearrange(x, "b v c h w -> (b v) c h w")
         z = self.vae.encode(x).latent_dist.sample() * self.vae.config.scaling_factor
 
         # print(z.shape, x.shape, self.vae.encoder, self.vae.decoder)
 
 
-        model_pred = self.unet(z, self.timesteps, encoder_hidden_states=caption_enc).sample
-        z_denoised = self.sched.step(model_pred, self.timesteps, z, return_dict=True).prev_sample
+        timesteps_tensor = torch.tensor([self.timestep], device=z.device).long()
+        model_pred = self.unet(z, timesteps_tensor, encoder_hidden_states=caption_enc).sample
+
+        z_denoised = self.sched.step(model_pred, self.timestep, z, return_dict=True).prev_sample
         self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
         output_image = (self.vae.decode(z_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-        output_image = rearrange(output_image, "(b v) c h w -> b v c h w", v=num_views)
 
         return output_image
 
-    def compile(self, optimization_level=4):
-        self.vae.encoder = torch.compile(self.vae.encoder, dynamic=False)
-        self.vae.decoder = torch.compile(self.vae.decoder, dynamic=False)
+    # def compile(self, optimization_level=4):
+    #     self.vae.encoder = torch.compile(self.vae.encoder, dynamic=False)
+    #     self.vae.decoder = torch.compile(self.vae.decoder, dynamic=False)
 
-        self.unet = torch.compile(self.unet,  dynamic=False)
+    #     self.unet = torch.compile(self.unet,  dynamic=False)
         
-        return
+    #     return
 
 
     def sample(self, image, width, height, ref_image=None):
@@ -264,14 +264,14 @@ transforms.Resize((height, width), Image.LANCZOS),
 transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
         )
         if ref_image is None:
-            x = T(image).unsqueeze(0).unsqueeze(0).cuda()
+            x = T(image).unsqueeze(0).cuda()  # (1, c, h, w)
         else:
             ref_image = ref_image.resize((height, width), Image.LANCZOS)
-            x = torch.stack([T(image), T(ref_image)], dim=0).unsqueeze(0).cuda()
+            x = torch.stack([T(image), T(ref_image)], dim=0).cuda()  # (2, c, h, w)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for i in tqdm(range(100)):
-                output_image = self.forward(x)[:, 0]
+                output_image = self.forward(x)  # Returns (b, c, h, w)
 
         output_pil = transforms.ToPILImage()(output_image[0].float().cpu() * 0.5 + 0.5)
         output_pil = output_pil.resize((input_width, input_height), Image.LANCZOS)
