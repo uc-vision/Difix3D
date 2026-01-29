@@ -231,9 +231,6 @@ class Difix(torch.nn.Module):
 
         z = self.vae.encode(x).latent_dist.sample() * self.vae.config.scaling_factor
 
-        # print(z.shape, x.shape, self.vae.encoder, self.vae.decoder)
-
-
         timesteps_tensor = torch.full((1,), self.timestep, device=z.device, dtype=torch.long)
         model_pred = self.unet(z, timesteps_tensor, encoder_hidden_states=caption_enc).sample
 
@@ -243,20 +240,9 @@ class Difix(torch.nn.Module):
 
         return output_image
 
-    # def compile(self, optimization_level=4):
-    #     self.vae.encoder = torch.compile(self.vae.encoder, dynamic=False)
-    #     self.vae.decoder = torch.compile(self.vae.decoder, dynamic=False)
-
-    #     self.unet = torch.compile(self.unet,  dynamic=False)
-        
-    #     return
-
 
     def sample(self, image, width, height, ref_image=None):
         input_width, input_height = image.size
-        # new_width = image.width - image.width % 8
-        # new_height = image.height - image.height % 8
-        # image = image.resize((new_width, new_height), Image.LANCZOS)
 
         T = transforms.Compose(
             [
