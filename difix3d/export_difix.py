@@ -6,6 +6,10 @@ import torch
 import diffusers.utils.logging as diffusers_logging
 import transformers.utils.logging as transformers_logging
 from difix3d.model import Difix
+from difix3d.convert_pipeline_to_model import convert_pipeline_to_model_state_dict
+from difix3d.pipeline_difix import DifixPipeline
+from difix3d.convert_pipeline_to_model import convert_pipeline_to_model_state_dict
+from difix3d.pipeline_difix import DifixPipeline
 
 
 @click.command()
@@ -24,14 +28,26 @@ def main(output_path, height, width, timestep, model_path, batch_size, dtype):
   diffusers_logging.enable_progress_bar()
   transformers_logging.set_verbosity_info()
   
+  script_path = Path(__file__).resolve()
+  checkpoint_dir = script_path.parent.parent / "checkpoints"
+  checkpoint_file = checkpoint_dir / "difix.pkl"
+  
+  # Convert pipeline to model weights if checkpoint doesn't exist
+  if not checkpoint_file.exists():
+    print("Checkpoint file not found. Converting pipeline to model weights...")
+    print("  This will download: tokenizer, text_encoder (~500MB), vae (~300MB), unet (~1GB+)")
+    print("  Progress bars should appear below if downloading...")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    difix_pipeline = DifixPipeline.from_pretrained("nvidia/difix", trust_remote_code=True)
+    convert_pipeline_to_model_state_dict(pipeline=difix_pipeline, model_name="difix", output_path=checkpoint_file)
+    print("✓ Conversion completed")
+  
   print("Loading Difix model components from HuggingFace...")
   print("  This will download: tokenizer, text_encoder (~500MB), vae (~300MB), unet (~1GB+)")
   print("  Progress bars should appear below if downloading...")
-  script_path = Path(__file__).resolve()
-  checkpoint_dir = script_path.parent.parent / "checkpoints"
   model = Difix(
     pretrained_name="nvidia/difix",
-    pretrained_path=str(checkpoint_dir / "difix.pkl"),
+    pretrained_path=checkpoint_file,
     timestep=timestep,
     mv_unet=False,
   )

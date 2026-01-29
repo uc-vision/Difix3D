@@ -5,21 +5,25 @@ from difix3d.pipeline_difix import DifixPipeline
 from difix3d.model import Difix
 
 
-def convert_pipeline_to_model_state_dict(pipeline, model_name):
+def convert_pipeline_to_model_state_dict(pipeline, model_name, output_path=None):
   """
   Convert a DifixPipeline to a state dict that can be loaded into a Difix model.
 
   Args:
       pipeline: DifixPipeline instance
       model_name: Model name for the output file
+      output_path: Optional full path to output file. If None, uses checkpoints/{model_name}.pkl
   """
+  from pathlib import Path
 
-  # Create output directory
-  output_dir = "checkpoints"
-  os.makedirs(output_dir, exist_ok=True)
-
-  # Set output path
-  output_path = os.path.join(output_dir, f"{model_name}.pkl")
+  if output_path is None:
+    # Create output directory
+    output_dir = Path("checkpoints")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{model_name}.pkl"
+  else:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
   # Extract state dicts from pipeline components
   state_dict = {}
