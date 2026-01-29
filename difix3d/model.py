@@ -234,7 +234,7 @@ class Difix(torch.nn.Module):
         # print(z.shape, x.shape, self.vae.encoder, self.vae.decoder)
 
 
-        timesteps_tensor = torch.tensor([self.timestep], device=z.device).long()
+        timesteps_tensor = torch.full((1,), self.timestep, device=z.device, dtype=torch.long)
         model_pred = self.unet(z, timesteps_tensor, encoder_hidden_states=caption_enc).sample
 
         z_denoised = self.sched.step(model_pred, self.timestep, z, return_dict=True).prev_sample

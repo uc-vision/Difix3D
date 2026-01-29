@@ -64,8 +64,6 @@ def main(args):
   if args.gradient_checkpointing:
     net_difix.unet.enable_gradient_checkpointing()
 
-  if args.allow_tf32:
-    torch.backends.cuda.matmul.allow_tf32 = True
 
   net_lpips = lpips.LPIPS(net="vgg").cuda()
 
@@ -438,14 +436,6 @@ if __name__ == "__main__":
     "--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer"
   )
   parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-  parser.add_argument(
-    "--allow_tf32",
-    action="store_true",
-    help=(
-      "Whether or not to allow TF32 on Ampere GPUs. Can be used to speed up training. For more information, see"
-      " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
-    ),
-  )
   parser.add_argument(
     "--report_to",
     type=str,
