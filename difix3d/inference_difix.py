@@ -78,7 +78,7 @@ def sample_image(model, image, dtype: torch.dtype):
     output_image = model(image)
   return output_image
 
-def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspace_size: int, dtype_str: str, verbose: bool, max_autotune: bool = False):
+def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspace_size: int, verbose: bool, max_autotune: bool = False):
   """Load and compile the exported model.
   
   Returns:
@@ -91,9 +91,10 @@ def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspac
   height = metadata["height"]
   width = metadata["width"]
   
-  dtype = DtypeMap[dtype_str]
+  # Always use dtype from metadata (model was exported with this dtype)
+  dtype = DtypeMap[metadata["dtype"]]
   
-  x = torch.zeros(1, 3, height, width).cuda()
+  x = torch.zeros(1, 3, height, width, dtype=dtype).cuda()
   exported_path = Path(exported_model)
   
   if tensorrt:
@@ -101,6 +102,8 @@ def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspac
     compiled_model = compile_tensorrt(exported_program, x, exported_path, workspace_size, enabled_precisions, dtype, verbose)
   elif compile_flag:
     model_module = exported_program.module()
+    # Ensure model is in correct dtype before compilation
+    model_module = model_module.to(dtype=dtype)
     if max_autotune:
       compiled_model = torch.compile(model_module, mode="max-autotune")
     else:
@@ -168,15 +171,14 @@ def run_inference_display(compiled_model, image: torch.Tensor, input_image: str,
 @click.option("--tensorrt", is_flag=True, help="Use TensorRT compilation")
 @click.option("--compile", is_flag=True, help="Use torch.compile")
 @click.option("--workspace-size", type=int, default=20, help="TensorRT workspace size in GB (default: 20GB)")
-@click.option("--dtype", type=click.Choice(["float32", "float16", "bfloat16", "int8"]), default="bfloat16", help="TensorRT enabled precision")
 @click.option("--verbose", is_flag=True, help="Enable verbose TensorRT output")
 @click.option("--batch-size", type=int, default=1, help="Batch size for inference")
 @click.option("--max-autotune", is_flag=True, help="Use max-autotune mode for torch.compile")
-def main(exported_model, input_image, benchmark, num_iterations, tensorrt, compile, workspace_size, dtype, verbose, batch_size, max_autotune):
+def main(exported_model, input_image, benchmark, num_iterations, tensorrt, compile, workspace_size, verbose, batch_size, max_autotune):
   torch.set_grad_enabled(False)
   torch.backends.cuda.matmul.allow_tf32 = True
   
-  compiled_model, height, width, dtype = load_model(exported_model, tensorrt, compile, workspace_size, dtype, verbose, max_autotune)
+  compiled_model, height, width, dtype = load_model(exported_model, tensorrt, compile, workspace_size, verbose, max_autotune)
   
   # Preprocess and load image on device before benchmark
   image = load_image_tensor(input_image, height, width, dtype=torch.float32)

@@ -15,7 +15,8 @@ from difix3d.model import Difix
 @click.option("--timestep", type=int, default=199, help="Diffusion timestep")
 @click.option("--model-path", type=str, default=None, help="Path to a model state dict to be used")
 @click.option("--batch-size", type=int, default=1, help="Batch size for export")
-def main(output_path, height, width, timestep, model_path, batch_size):
+@click.option("--dtype", type=click.Choice(["float32", "float16", "bfloat16"]), default="bfloat16", help="Dtype for export")
+def main(output_path, height, width, timestep, model_path, batch_size, dtype):
   torch.set_grad_enabled(False)
   torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -43,12 +44,19 @@ def main(output_path, height, width, timestep, model_path, batch_size):
 
   print("Preparing model for export...")
   model.set_eval()
-  model = model.to(dtype=torch.bfloat16)
-
-  print(f"Exporting model with batch size {batch_size}...")
-  x = torch.zeros(batch_size, 3, height, width).cuda()
   
-  with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+  dtype_map = {
+    "float32": torch.float32,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+  }
+  export_dtype = dtype_map[dtype]
+  model = model.to(dtype=export_dtype)
+
+  print(f"Exporting model with batch size {batch_size} and dtype {dtype}...")
+  x = torch.zeros(batch_size, 3, height, width, dtype=export_dtype).cuda()
+  
+  with torch.autocast(device_type="cuda", dtype=export_dtype):
     exported_program = torch.export.export(model, (x,))
 
   print("Saving exported model...")
@@ -61,6 +69,7 @@ def main(output_path, height, width, timestep, model_path, batch_size):
     "width": width,
     "timestep": timestep,
     "batch_size": batch_size,
+    "dtype": dtype,
   }
   
   torch.export.save(exported_program, str(model_file), extra_files={"metadata.json": json.dumps(metadata)})
