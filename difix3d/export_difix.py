@@ -20,7 +20,8 @@ from difix3d.pipeline_difix import DifixPipeline
 @click.option("--model-path", type=str, default=None, help="Path to a model state dict to be used")
 @click.option("--batch-size", type=int, default=1, help="Batch size for export")
 @click.option("--dtype", type=click.Choice(["float32", "float16", "bfloat16"]), default="bfloat16", help="Dtype for export")
-def main(output_path, height, width, timestep, model_path, batch_size, dtype):
+@click.option("--reference", is_flag=True, default=False, help="Export model with reference image support (batch_size=2)")
+def main(output_path, height, width, timestep, model_path, batch_size, dtype, reference):
   torch.set_grad_enabled(False)
   torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -70,27 +71,30 @@ def main(output_path, height, width, timestep, model_path, batch_size, dtype):
   model = model.to(dtype=export_dtype)
 
   print(f"Exporting model with batch size {batch_size} and dtype {dtype}...")
-  x = torch.zeros(batch_size, 3, height, width, dtype=export_dtype).cuda()
-  
-  with torch.autocast(device_type="cuda", dtype=export_dtype):
-    exported_program = torch.export.export(model, (x,))
-
-  print("Saving exported model...")
   output_dir = Path(output_path)
   output_dir.mkdir(parents=True, exist_ok=True)
-  model_file = output_dir / "difix3d.pt2"
   
-  metadata = {
-    "height": height,
-    "width": width,
-    "timestep": timestep,
-    "batch_size": batch_size,
-    "dtype": dtype,
-  }
-  
-  torch.export.save(exported_program, str(model_file), extra_files={"metadata.json": json.dumps(metadata)})
+  # Export both versions: with and without reference
+  for ref_mode in [False, True]:
+    # Reference mode uses batch_size=2 (two 3-channel images stacked), not 6 channels
+    export_batch_size = 2 if ref_mode else batch_size
+    inputs = torch.zeros(export_batch_size, 3, height, width, dtype=export_dtype).cuda()
+    
+    with torch.autocast(device_type="cuda", dtype=export_dtype):
+      exported_program = torch.export.export(model, (inputs,))
 
-  print(f"Exported model saved to {model_file}")
+    print(f"Saving exported model ({'with' if ref_mode else 'without'} reference)...")
+    model_file = output_dir / ("difix3d_ref.pt2" if ref_mode else "difix3d.pt2")
+    
+    metadata = {
+      "height": height,
+      "width": width,
+      "dtype": dtype,
+      "reference": ref_mode,
+    }
+    
+    torch.export.save(exported_program, str(model_file), extra_files={"metadata.json": json.dumps(metadata)})
+    print(f"Exported model saved to {model_file}")
 
 if __name__ == "__main__":
   main()

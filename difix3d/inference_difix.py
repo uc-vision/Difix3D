@@ -63,26 +63,35 @@ def compile_tensorrt(exported_program, example_input, exported_model_path: Path,
   torch.save(compiled_model, cache_file, pickle_protocol=pickle.HIGHEST_PROTOCOL)
   return compiled_model
 
-def sample_image(model, image, dtype: torch.dtype):
+def sample_image(model, image, dtype: torch.dtype, reference: torch.Tensor | None = None):
   """Sample an image using the exported model.
   
   Args:
     model: Exported model to use for inference
     image: Input tensor of shape (b, c, h, w) already on device, in [-1, 1] range
     dtype: Dtype to use for autocast
+    reference: Optional reference tensor of shape (b, c, h, w), required if model uses reference
     
   Returns:
     Output tensor of shape (b, c, h, w) on device, normalized to [-1, 1]
   """
+  if reference is not None:
+    # Stack along batch dimension (batch_size=2) instead of channel dimension
+    inputs = torch.cat([image, reference], dim=0)
+  else:
+    inputs = image
   with torch.autocast(device_type="cuda", dtype=dtype):
-    output_image = model(image)
+    output_image = model(inputs)
+  # If reference was used, model returns batch_size=2, take first element
+  if reference is not None:
+    output_image = output_image[0:1]
   return output_image
 
 def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspace_size: int, verbose: bool, max_autotune: bool = False):
   """Load and compile the exported model.
   
   Returns:
-    Tuple of (compiled_model, height, width, dtype)
+    Tuple of (compiled_model, height, width, dtype, reference)
   """
   extra_files = {"metadata.json": ""}
   exported_program = torch.export.load(exported_model, extra_files=extra_files)
@@ -90,11 +99,14 @@ def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspac
   
   height = metadata["height"]
   width = metadata["width"]
+  reference = metadata.get("reference", False)
   
   # Always use dtype from metadata (model was exported with this dtype)
   dtype = DtypeMap[metadata["dtype"]]
   
-  x = torch.zeros(1, 3, height, width, dtype=dtype).cuda()
+  # Reference mode uses batch_size=2 (two 3-channel images stacked), not 6 channels
+  batch_size = 2 if reference else 1
+  x = torch.zeros(batch_size, 3, height, width, dtype=dtype).cuda()
   exported_path = Path(exported_model)
   
   if tensorrt:
@@ -111,20 +123,20 @@ def load_model(exported_model: str, tensorrt: bool, compile_flag: bool, workspac
   else:
     compiled_model = exported_program.module()
   
-  return compiled_model, height, width, dtype
+  return compiled_model, height, width, dtype, reference
 
-def run_benchmark(compiled_model, image: torch.Tensor, num_iterations: int, dtype: torch.dtype):
+def run_benchmark(compiled_model, image: torch.Tensor, num_iterations: int, dtype: torch.dtype, reference: torch.Tensor | None = None):
   """Run benchmark on the compiled model."""
   print("Warming up...")
   for _ in range(10):
-    _ = sample_image(compiled_model, image, dtype)
+    _ = sample_image(compiled_model, image, dtype, reference)
   
   print(f"Benchmarking {num_iterations} iterations...")
   torch.cuda.synchronize()
   start_time = time.time()
   
   for _ in tqdm(range(num_iterations), desc="Benchmarking"):
-    output_image = sample_image(compiled_model, image, dtype)
+    output_image = sample_image(compiled_model, image, dtype, reference)
   
   torch.cuda.synchronize()
   end_time = time.time()
@@ -138,14 +150,14 @@ def run_benchmark(compiled_model, image: torch.Tensor, num_iterations: int, dtyp
   print(f"  Average time per iteration: {avg_time*1000:.2f}ms")
   print(f"  Throughput: {fps:.2f} FPS")
 
-def run_inference_display(compiled_model, image: torch.Tensor, input_image: str, height: int, width: int, dtype: torch.dtype):
+def run_inference_display(compiled_model, image: torch.Tensor, input_image: str, height: int, width: int, dtype: torch.dtype, reference: torch.Tensor | None = None, reference_image: str | None = None):
   """Run inference and display results."""
   print("Warming up...")
   for _ in range(10):
-    _ = sample_image(compiled_model, image, dtype)
+    _ = sample_image(compiled_model, image, dtype, reference)
   
   print("Running inference...")
-  output_image = sample_image(compiled_model, image, dtype)
+  output_image = sample_image(compiled_model, image, dtype, reference)
   output_np = tensor_to_image(output_image)
   
   # Load original input image for display
@@ -164,7 +176,7 @@ def run_inference_display(compiled_model, image: torch.Tensor, input_image: str,
   cv2.destroyAllWindows()
 
 @click.command()
-@click.option("--exported-model", type=str, default="output/difix3d.pt2", help="Path to the exported model file")
+@click.option("--exported-model", type=str, default=None, help="Path to the exported model file")
 @click.argument("input_image", type=str)
 @click.option("--benchmark", is_flag=True, help="Run benchmark instead of showing images")
 @click.option("--num-iterations", type=int, default=100, help="Number of iterations for benchmarking")
@@ -172,27 +184,37 @@ def run_inference_display(compiled_model, image: torch.Tensor, input_image: str,
 @click.option("--compile", is_flag=True, help="Use torch.compile")
 @click.option("--workspace-size", type=int, default=20, help="TensorRT workspace size in GB (default: 20GB)")
 @click.option("--verbose", is_flag=True, help="Enable verbose TensorRT output")
-@click.option("--batch-size", type=int, default=1, help="Batch size for inference")
 @click.option("--max-autotune", is_flag=True, help="Use max-autotune mode for torch.compile")
-def main(exported_model, input_image, benchmark, num_iterations, tensorrt, compile, workspace_size, verbose, batch_size, max_autotune):
+@click.option("--ref", type=str, default=None, help="Reference image path")
+def main(exported_model, input_image, benchmark, num_iterations, tensorrt, compile, workspace_size, verbose, max_autotune, ref):
   torch.set_grad_enabled(False)
   torch.backends.cuda.matmul.allow_tf32 = True
   
-  compiled_model, height, width, dtype = load_model(exported_model, tensorrt, compile, workspace_size, verbose, max_autotune)
+  if exported_model is None:
+    exported_model = "output/difix3d_ref.pt2" if ref is not None else "output/difix3d.pt2"
+  
+  compiled_model, height, width, dtype, uses_reference = load_model(exported_model, tensorrt, compile, workspace_size, verbose, max_autotune)
+  
+  if (ref is not None) != uses_reference:
+    if uses_reference:
+      raise ValueError(f"Model at {exported_model} requires a reference image (use --ref)")
+    else:
+      raise ValueError(f"Model at {exported_model} does not support reference images (remove --ref)")
   
   # Preprocess and load image on device before benchmark
   image = load_image_tensor(input_image, height, width, dtype=torch.float32)
+  
+  ref_tensor = None
+  if uses_reference:
+    ref_tensor = load_image_tensor(ref, height, width, dtype=torch.float32)
   
   # Ensure image is ready for inference
   torch.cuda.synchronize()
 
   if benchmark:
-    # Expand to batch size for benchmark
-    if batch_size > 1:
-      image = image.repeat(batch_size, 1, 1, 1)
-    run_benchmark(compiled_model, image, num_iterations, dtype)
+    run_benchmark(compiled_model, image, num_iterations, dtype, ref_tensor)
   else:
-    run_inference_display(compiled_model, image, input_image, height, width, dtype)
+    run_inference_display(compiled_model, image, input_image, height, width, dtype, ref_tensor, ref)
 
 if __name__ == "__main__":
   main()
