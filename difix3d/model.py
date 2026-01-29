@@ -185,6 +185,21 @@ class Difix(torch.nn.Module):
         self.timestep = timestep  # Store as Python int
         self.text_encoder.requires_grad_(False)
 
+        # Precompute caption encoding for fixed prompt "remove degradation"
+        prompt = "remove degradation"
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids.cuda()
+        with torch.no_grad():
+            caption_enc = self.text_encoder(text_input_ids)[0]
+        # Register as buffer so it gets saved with the model
+        self.register_buffer("caption_enc_base", caption_enc)
+
         # print number of trainable parameters
         print("=" * 50)
         print(f"Number of trainable parameters in UNet: {sum(p.numel() for p in unet.parameters() if p.requires_grad) / 1e6:.2f}M")
@@ -211,31 +226,53 @@ class Difix(torch.nn.Module):
         self.vae.decoder.skip_conv_4.requires_grad_(True)
 
     def get_caption_enc(self, batch_size: int = 1, dtype: torch.dtype = torch.float32):
-        caption_enc = torch.zeros(batch_size, 77, 1024, device="cuda", dtype=dtype)
-        return caption_enc
-
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass with batch of images.
+        """Get precomputed caption encoding repeated for batch size.
         
         Args:
-            x: Input tensor of shape (b, c, h, w) - batch of images
+            batch_size: Batch size for the caption encoding
+            dtype: Dtype for the encoding (will convert if needed)
             
         Returns:
-            Output tensor of shape (b, c, h, w) - processed images
+            Encoded caption tensor of shape (batch_size, 77, 1024)
         """
-        # x is (b, c, h, w)
-        b = x.shape[0]
-        caption_enc = self.get_caption_enc(b, dtype=x.dtype)
+        caption_enc = self.caption_enc_base.to(dtype=dtype)
+        # Repeat for batch_size
+        caption_enc = caption_enc.repeat(batch_size, 1, 1)
+        return caption_enc
 
-        z = self.vae.encode(x).latent_dist.sample() * self.vae.config.scaling_factor
+    def forward(self, x: torch.Tensor, ref_image: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Forward pass with single image (batch size always 1).
+        
+        Args:
+            x: Input tensor of shape (1, c, h, w) - single image
+            ref_image: Optional reference image tensor of shape (1, c, h, w)
+            
+        Returns:
+            Output tensor of shape (1, c, h, w) - processed image
+        """
+        if ref_image is not None:
+            # Stack input and reference: (1, c, h, w) + (1, c, h, w) -> (2, c, h, w)
+            x_combined = torch.cat([x, ref_image], dim=0)
+            z = self.vae.encode(x_combined).latent_dist.sample() * self.vae.config.scaling_factor
+            skip_acts = self.vae.encoder.current_down_blocks
+            caption_enc = self.get_caption_enc(2, dtype=x.dtype)
+        else:
+            z = self.vae.encode(x).latent_dist.sample() * self.vae.config.scaling_factor
+            skip_acts = self.vae.encoder.current_down_blocks
+            caption_enc = self.get_caption_enc(1, dtype=x.dtype)
 
         timesteps_tensor = torch.full((1,), self.timestep, device=z.device, dtype=torch.long)
         model_pred = self.unet(z, timesteps_tensor, encoder_hidden_states=caption_enc).sample
 
         z_denoised = self.sched.step(model_pred, self.timestep, z, return_dict=True).prev_sample
-        self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
+        
+        # Slice to get only input image (remove reference if present)
+        if ref_image is not None:
+            z_denoised = z_denoised[:1]
+            skip_acts = [skip_act[:1] for skip_act in skip_acts]
+        
+        self.vae.decoder.incoming_skip_acts = skip_acts
         output_image = (self.vae.decode(z_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
 
         return output_image

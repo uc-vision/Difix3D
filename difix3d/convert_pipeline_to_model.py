@@ -28,6 +28,11 @@ def convert_pipeline_to_model_state_dict(pipeline, model_name, output_path=None)
   # Extract state dicts from pipeline components
   state_dict = {}
 
+  # Detect if UNet uses mv_unet (check module path)
+  unet_module = pipeline.unet.__class__.__module__
+  is_mv_unet = "mv_unet" in unet_module
+  state_dict["mv_unet"] = is_mv_unet
+
   # Get VAE LoRA configuration from the pipeline
   state_dict["vae_lora_target_modules"] = list(pipeline.vae.peft_config["vae_skip"].target_modules)
   state_dict["rank_vae"] = pipeline.vae.peft_config["vae_skip"].r
